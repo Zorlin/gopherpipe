@@ -34,18 +34,18 @@ func main() {
 func startServer(port string, debug bool) {
 	listener, err := kcp.ListenWithOptions(":"+port, nil, 10, 3)
 	if err != nil {
-		fmt.Println("Failed to start server:", err)
+		fmt.Fprintln(os.Stderr, "Failed to start server:", err)
 		return
 	}
-	fmt.Printf("Now listening for KCP connections on 0.0.0.0:%s\n", port)
+	fmt.Fprintf(os.Stderr, "Now listening for KCP connections on 0.0.0.0:%s\n", port)
 
 	for {
 		conn, err := listener.AcceptKCP()
 		if err != nil {
-			fmt.Println("Failed to accept connection:", err)
+			fmt.Fprintln(os.Stderr, "Failed to accept connection:", err)
 			continue
 		}
-		fmt.Printf("Accepted connection from %s\n", conn.RemoteAddr())
+		fmt.Fprintf(os.Stderr, "Accepted connection from %s\n", conn.RemoteAddr())
 
 		go handleConnection(conn, debug)
 	}
@@ -59,18 +59,18 @@ func handleConnection(conn *kcp.UDPSession, debug bool) {
 		n, err := conn.Read(buffer)
 		if err != nil {
 			if err != io.EOF {
-				fmt.Printf("Connection with %s failed: %s\n", conn.RemoteAddr(), err)
+				fmt.Fprintf(os.Stderr, "Connection with %s failed: %s\n", conn.RemoteAddr(), err)
 			}
 			return
 		}
 
 		if debug {
-			fmt.Printf("Received data: %s\n", string(buffer[:n]))
+			fmt.Fprintf(os.Stderr, "Received data: %s\n", string(buffer[:n]))
 		}
 
 		_, err = os.Stdout.Write(buffer[:n])
 		if err != nil {
-			fmt.Printf("Failed to write data to stream: %s, retrying...\n", err)
+			fmt.Fprintf(os.Stderr, "Failed to write data to stream: %s, retrying...\n", err)
 		}
 	}
 }
@@ -78,7 +78,7 @@ func handleConnection(conn *kcp.UDPSession, debug bool) {
 func startClient(addr string, debug bool) {
 	conn, err := kcp.DialWithOptions(addr, nil, 10, 3)
 	if err != nil {
-		fmt.Println("Failed to connect:", err)
+		fmt.Fprintln(os.Stderr, "Failed to connect:", err)
 		return
 	}
 	defer conn.Close()
@@ -90,18 +90,18 @@ func startClient(addr string, debug bool) {
 		n, err := reader.Read(buffer)
 		if err != nil {
 			if err != io.EOF {
-				fmt.Println("Failed to read from stdin:", err)
+				fmt.Fprintln(os.Stderr, "Failed to read from stdin:", err)
 			}
 			return
 		}
 
 		if debug {
-			fmt.Printf("Read data: %s\n", string(buffer[:n]))
+			fmt.Fprintf(os.Stderr, "Read data: %s\n", string(buffer[:n]))
 		}
 
 		_, err = conn.Write(buffer[:n])
 		if err != nil {
-			fmt.Printf("Failed to send data: %s, retrying...\n", err)
+			fmt.Fprintf(os.Stderr, "Failed to send data: %s, retrying...\n", err)
 		}
 	}
 }
