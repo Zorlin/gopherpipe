@@ -24,15 +24,21 @@ var (
 func main() {
 	flag.Parse()
 
+	blockCrypt, err := kcp.NewNoneBlockCrypt(nil) // Disable encryption
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Failed to create block crypt:", err)
+		return
+	}
+
 	if *serverMode {
-		startServer(*port, *debug)
+		startServer(*port, *debug, blockCrypt)
 	} else {
-		startClient(*address, *debug)
+		startClient(*address, *debug, blockCrypt)
 	}
 }
 
-func startServer(port string, debug bool) {
-	listener, err := kcp.ListenWithOptions(":"+port, nil, 10, 3)
+func startServer(port string, debug bool, block kcp.BlockCrypt) {
+	listener, err := kcp.ListenWithOptions(":"+port, block, 10, 3)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to start server:", err)
 		return
@@ -75,33 +81,38 @@ func handleConnection(conn *kcp.UDPSession, debug bool) {
 	}
 }
 
-func startClient(addr string, debug bool) {
-	conn, err := kcp.DialWithOptions(addr, nil, 10, 3)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Failed to connect:", err)
-		return
-	}
-	defer conn.Close()
+func startClient(addr string, debug bool, block kcp.BlockCrypt) {
+    conn, err := kcp.DialWithOptions(addr, block, 10, 3)
+    if err != nil {
+        fmt.Fprintln(os.Stderr, "Failed to connect:", err)
+        return
+    }
+    defer conn.Close()
 
-	reader := bufio.NewReader(os.Stdin)
-	buffer := make([]byte, bufferSize)
+    reader := bufio.NewReader(os.Stdin)
+    buffer := make([]byte, bufferSize)
 
-	for {
-		n, err := reader.Read(buffer)
-		if err != nil {
-			if err != io.EOF {
-				fmt.Fprintln(os.Stderr, "Failed to read from stdin:", err)
-			}
-			return
-		}
+    go func() {
+        for {
+            n, err := reader.Read(buffer)
+            if err != nil {
+                if err != io.EOF {
+                    fmt.Fprintln(os.Stderr, "Failed to read from stdin:", err)
+                }
+                return
+            }
 
-		if debug {
-			fmt.Fprintf(os.Stderr, "Read data: %s\n", string(buffer[:n]))
-		}
+            if debug {
+                fmt.Fprintf(os.Stderr, "Read data: %s\n", string(buffer[:n]))
+            }
 
-		_, err = conn.Write(buffer[:n])
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to send data: %s, retrying...\n", err)
-		}
-	}
+            _, err = conn.Write(buffer[:n])
+            if err != nil {
+                fmt.Fprintf(os.Stderr, "Failed to send data: %s, retrying...\n", err)
+            }
+        }
+    }()
+
+    // Keep the main goroutine running until the child goroutine finishes.
+    select {}
 }
