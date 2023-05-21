@@ -152,6 +152,9 @@ func handleStream(id int, session quic.Session, debug bool, wg *sync.WaitGroup, 
 
 		order := binary.BigEndian.Uint64(buffer[:8]) // Extract the order value from the buffer
 
+		if debug {
+			fmt.Fprintf(os.Stderr, "Order value for ID %d: %d\n", id, order)
+		}
 		chData <- channelData{
 			data:  buffer[8:n],
 			order: int64(order),
