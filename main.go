@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"container/heap"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -9,12 +10,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	quic "github.com/lucas-clemente/quic-go"
 )
 
 const (
 	bufferSize = 134217728 // 128 MB
+	chanNum    = 8         // Number of channels
 )
 
 var (
@@ -25,6 +28,36 @@ var (
 	certFile   = flag.String("cert", "", "certificate file")
 	keyFile    = flag.String("key", "", "private key file")
 )
+
+type channelData struct {
+	data   []byte
+	order  int64
+}
+
+type PriorityQueue []*channelData
+
+func (pq PriorityQueue) Len() int { return len(pq) }
+
+func (pq PriorityQueue) Less(i, j int) bool {
+	return pq[i].order < pq[j].order
+}
+
+func (pq PriorityQueue) Swap(i, j int) {
+	pq[i], pq[j] = pq[j], pq[i]
+}
+
+func (pq *PriorityQueue) Push(x interface{}) {
+	item := x.(*channelData)
+	*pq = append(*pq, item)
+}
+
+func (pq *PriorityQueue) Pop() interface{} {
+	old := *pq
+	n := len(old)
+	item := old[n-1]
+	*pq = old[0 : n-1]
+	return item
+}
 
 func main() {
 	flag.Parse()
@@ -77,6 +110,23 @@ func startServer(port string, debug bool, tlsConfig *tls.Config) {
 func handleConnection(session quic.Session, debug bool) {
 	defer session.CloseWithError(0, "")
 
+	var wg sync.WaitGroup
+	chData := make(chan channelData, chanNum)
+
+	for i := 0; i < chanNum; i++ {
+		wg.Add(1)
+		go handleStream(i, session, debug, &wg, chData)
+	}
+
+	go handleWrite(chData)
+
+	wg.Wait()
+	close(chData)
+}
+
+func handleStream(id int, session quic.Session, debug bool, wg *sync.WaitGroup, chData chan<- channelData) {
+	defer wg.Done()
+
 	stream, err := session.AcceptStream(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to accept stream:", err)
@@ -97,9 +147,28 @@ func handleConnection(session quic.Session, debug bool) {
 			fmt.Fprintf(os.Stderr, "Received data: %s\n", string(buffer[:n]))
 		}
 
-		_, err = os.Stdout.Write(buffer[:n])
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to write data to stream: %s, retrying...\n", err)
+		chData <- channelData{
+			data:  buffer[:n],
+			order: int64(id),
+		}
+	}
+}
+
+func handleWrite(chData <-chan channelData) {
+	defer wg.Done()
+
+	priorityQueue := make(PriorityQueue, 0, bufferSize)
+	heap.Init(&priorityQueue)
+
+	for chData := range chData {
+		heap.Push(&priorityQueue, chData)
+		for priorityQueue.Len() > 0 && priorityQueue[0].order == lastOrder+1 {
+			lastOrder++
+			item := heap.Pop(&priorityQueue).(channelData)
+			_, err := os.Stdout.Write(item.data)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to write data to stream: %s, retrying...\n", err)
+			}
 		}
 	}
 }
@@ -112,16 +181,14 @@ func startClient(addr string, debug bool, tlsConfig *tls.Config) {
 	}
 	defer session.CloseWithError(0, "")
 
-	stream, err := session.OpenStreamSync(context.Background())
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Failed to open stream:", err)
-		return
-	}
-
-	reader := bufio.NewReader(os.Stdin)
-	buffer := make([]byte, bufferSize)
+	wg := &sync.WaitGroup{}
+	chData := make(chan channelData, chanNum)
 
 	go func() {
+		defer close(chData)
+		reader := bufio.NewReader(os.Stdin)
+		buffer := make([]byte, bufferSize)
+		var order int64 = 0
 		for {
 			n, err := reader.Read(buffer)
 			if err != nil {
@@ -131,17 +198,41 @@ func startClient(addr string, debug bool, tlsConfig *tls.Config) {
 				return
 			}
 
+			chData <- channelData{
+				data:  buffer[:n],
+				order: order,
+			}
+			order++
+		}
+	}()
+
+	for i := 0; i < chanNum; i++ {
+		wg.Add(1)
+		go handleClientConnection(i, session, debug, wg, chData)
+	}
+
+	wg.Wait()
+}
+
+func handleClientConnection(id int, session quic.Session, debug bool, wg *sync.WaitGroup, chData <-chan channelData) {
+	defer wg.Done()
+
+	stream, err := session.OpenStreamSync(context.Background())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Failed to open stream:", err)
+		return
+	}
+
+	for chData := range chData {
+		if chData.order%chanNum == int64(id) {
 			if debug {
-				fmt.Fprintf(os.Stderr, "Read data: %s\n", string(buffer[:n]))
+				fmt.Fprintf(os.Stderr, "Read data: %s\n", string(chData.data))
 			}
 
-			_, err = stream.Write(buffer[:n])
+			_, err = stream.Write(chData.data)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to send data: %s, retrying...\n", err)
 			}
 		}
-	}()
-
-	// Keep the main goroutine running until the child goroutine finishes.
-	select {}
+	}
 }
