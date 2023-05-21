@@ -129,11 +129,12 @@ func handleConnection(session quic.Session, debug bool, numChannels uint) {
 				fmt.Fprintf(os.Stderr, "Received data: %s\n", string(buffer[:n]))
 			}
 
-			_, err = os.Stdout.Write(buffer[:n])
+		go func(b []byte) {
+			_, err = os.Stdout.Write(b)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to write data to stream: %s, retrying...\n", err)
 			}
-		}
+		}(buffer[:n])
 	}
 }
 
