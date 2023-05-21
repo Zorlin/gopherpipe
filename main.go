@@ -47,7 +47,8 @@ func (pq PriorityQueue) Swap(i, j int) {
 }
 
 func (pq *PriorityQueue) Push(x interface{}) {
-	item := x.(*channelData)
+	item := x.(channelData)
+	item.index = len(*pq)
 	*pq = append(*pq, item)
 }
 
@@ -163,7 +164,7 @@ func handleWrite(chData <-chan channelData) {
 		heap.Push(&priorityQueue, chData)
 		for priorityQueue.Len() > 0 && priorityQueue[0].order == lastOrder+1 {
 			lastOrder++
-			item := heap.Pop(&priorityQueue).(*channelData)
+			item := heap.Pop(&priorityQueue).(channelData)
 			_, err := os.Stdout.Write(item.data)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to write data to stream: %s\n", err)
