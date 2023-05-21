@@ -155,19 +155,18 @@ func handleStream(id int, session quic.Session, debug bool, wg *sync.WaitGroup, 
 }
 
 func handleWrite(chData <-chan channelData) {
-	defer wg.Done()
-
 	priorityQueue := make(PriorityQueue, 0, bufferSize)
 	heap.Init(&priorityQueue)
+	var lastOrder int64 = -1
 
 	for chData := range chData {
 		heap.Push(&priorityQueue, chData)
 		for priorityQueue.Len() > 0 && priorityQueue[0].order == lastOrder+1 {
 			lastOrder++
-			item := heap.Pop(&priorityQueue).(channelData)
+			item := heap.Pop(&priorityQueue).(*channelData)
 			_, err := os.Stdout.Write(item.data)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to write data to stream: %s, retrying...\n", err)
+				fmt.Fprintf(os.Stderr, "Failed to write data to stream: %s\n", err)
 			}
 		}
 	}
