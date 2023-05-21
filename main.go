@@ -128,33 +128,35 @@ func handleConnection(session quic.Session, debug bool, chanNum int) {
 }
 
 func handleStream(id int, session quic.Session, debug bool, wg *sync.WaitGroup, chData chan<- channelData) {
-	defer wg.Done()
+    defer wg.Done()
 
-	stream, err := session.AcceptStream(context.Background())
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Failed to accept stream:", err)
-		return
-	}
+    stream, err := session.AcceptStream(context.Background())
+    if err != nil {
+        fmt.Fprintln(os.Stderr, "Failed to accept stream:", err)
+        return
+    }
 
-	buffer := make([]byte, bufferSize)
-	for {
-		n, err := stream.Read(buffer)
-		if err != nil {
-			if err != io.EOF {
-				fmt.Fprintf(os.Stderr, "Connection with %s failed: %s\n", session.RemoteAddr(), err)
-			}
-			return
-		}
+    buffer := make([]byte, bufferSize)
+    var counter int64 = 0
+    for {
+        n, err := stream.Read(buffer)
+        if err != nil {
+            if err != io.EOF {
+                fmt.Fprintf(os.Stderr, "Connection with %s failed: %s\n", session.RemoteAddr(), err)
+            }
+            return
+        }
 
-		if debug {
-			fmt.Fprintf(os.Stderr, "Received data: %s\n", string(buffer[:n]))
-		}
+        if debug {
+            fmt.Fprintf(os.Stderr, "Received data: %s\n", string(buffer[:n]))
+        }
 
-		chData <- channelData{
-			data:  buffer[:n],
-			order: int64(id),
-		}
-	}
+        chData <- channelData{
+            data:  buffer[:n],
+            order: counter,
+        }
+        counter++
+    }
 }
 
 func handleWrite(chData <-chan channelData) {
