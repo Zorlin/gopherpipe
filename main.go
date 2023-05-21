@@ -154,10 +154,11 @@ func handleStream(id int, session quic.Session, debug bool, wg *sync.WaitGroup, 
 }
 
 func handleStreamRead(id int, stream quic.Stream, debug bool, chData chan<- channelData, bufferSize int) {
-	buffer := make([]byte, bufferSize+8) // Create the buffer with the specified bufferSize
+	orderBuffer := make([]byte, 8) // Buffer to receive the order value
+	dataBuffer := make([]byte, bufferSize) // Buffer to receive the data
 
 	for {
-		n, err := stream.Read(buffer)
+		_, err := io.ReadFull(stream, orderBuffer) // Read the order value
 		if err != nil {
 			if err != io.EOF {
 				fmt.Fprintf(os.Stderr, "Stream read error for ID %d: %s\n", id, err)
@@ -165,14 +166,20 @@ func handleStreamRead(id int, stream quic.Stream, debug bool, chData chan<- chan
 			break
 		}
 
-		if debug {
-			fmt.Fprintf(os.Stderr, "Received data from ID %d: %s\n", id, string(buffer[8:n])) // Print the actual data, excluding the order value
+		order := binary.BigEndian.Uint64(orderBuffer)
+
+		n, err := stream.Read(dataBuffer)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Stream read error for ID %d: %s\n", id, err)
+			break
 		}
 
-		order := binary.BigEndian.Uint64(buffer[:8]) // Extract the order value from the buffer
+		if debug {
+			fmt.Fprintf(os.Stderr, "Received data from ID %d: %s\n", id, string(dataBuffer[:n]))
+		}
 
 		chData <- channelData{
-			data:  buffer[8:n],
+			data:  append([]byte(nil), dataBuffer[:n]...), // Copy the data
 			order: int64(order),
 		}
 	}
@@ -230,11 +237,11 @@ func startClient(addr string, debug bool, tlsConfig *tls.Config, chanNum, buffer
 	}
 
 	reader := bufio.NewReader(os.Stdin)
-	buffer := make([]byte, bufferSize-8) // Leave room for the order value
+	buffer := make([]byte, bufferSize)
 
 	var order int64 = 0
 	for {
-		n, err := readFull(reader, buffer)
+		n, err := reader.Read(buffer)
 		if err != nil {
 			if err != io.EOF {
 				fmt.Fprintln(os.Stderr, "Failed to read from stdin:", err)
