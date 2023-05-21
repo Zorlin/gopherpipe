@@ -129,7 +129,7 @@ func handleStream(id int, session quic.Session, debug bool, wg *sync.WaitGroup, 
 
 	stream, err := session.AcceptStream(context.Background())
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Failed to accept stream:", err)
+		fmt.Fprintf(os.Stderr, "Failed to accept stream for ID %d: %s\n", id, err)
 		return
 	}
 
@@ -139,13 +139,13 @@ func handleStream(id int, session quic.Session, debug bool, wg *sync.WaitGroup, 
 		n, err := stream.Read(buffer)
 		if err != nil {
 			if err != io.EOF {
-				fmt.Fprintf(os.Stderr, "Connection with %s failed: %s\n", session.RemoteAddr(), err)
+				fmt.Fprintf(os.Stderr, "Stream read error for ID %d: %s\n", id, err)
 			}
 			return
 		}
 
 		if debug {
-			fmt.Fprintf(os.Stderr, "Received data: %s\n", string(buffer[8:n])) // Print the actual data, excluding the order value
+			fmt.Fprintf(os.Stderr, "Received data for ID %d: %s\n", id, string(buffer[8:n])) // Print the actual data, excluding the order value
 		}
 
 		order := binary.BigEndian.Uint64(buffer[:8]) // Extract the order value from the buffer
