@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"io"
@@ -175,7 +176,7 @@ func handleWrite(chData <-chan channelData) {
 	}
 }
 
-func startClient(addr string, debug bool, tlsConfig *tls.Config) {
+func startClient(addr string, debug bool, tlsConfig *tls.Config, chanNum int) {
 	session, err := quic.DialAddr(addr, tlsConfig, nil)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to connect:", err)
@@ -183,37 +184,46 @@ func startClient(addr string, debug bool, tlsConfig *tls.Config) {
 	}
 	defer session.CloseWithError(0, "")
 
-	wg := &sync.WaitGroup{}
-	chData := make(chan channelData, chanNum)
-
-	go func() {
-		defer close(chData)
-		reader := bufio.NewReader(os.Stdin)
-		buffer := make([]byte, bufferSize)
-		var order int64 = 0
-		for {
-			n, err := reader.Read(buffer)
-			if err != nil {
-				if err != io.EOF {
-					fmt.Fprintln(os.Stderr, "Failed to read from stdin:", err)
-				}
-				return
-			}
-
-			chData <- channelData{
-				data:  buffer[:n],
-				order: order,
-			}
-			order++
-		}
-	}()
-
+	streams := make([]quic.Stream, chanNum)
 	for i := 0; i < chanNum; i++ {
-		wg.Add(1)
-		go handleClientConnection(i, session, debug, wg, chData)
+		stream, err := session.OpenStreamSync(context.Background())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Failed to open stream:", err)
+			return
+		}
+		streams[i] = stream
 	}
 
-	wg.Wait()
+	reader := bufio.NewReader(os.Stdin)
+	buffer := make([]byte, bufferSize-8) // Leave room for the order value
+
+	var order int64 = 0
+	for {
+		n, err := reader.Read(buffer)
+		if err != nil {
+			if err != io.EOF {
+				fmt.Fprintln(os.Stderr, "Failed to read from stdin:", err)
+			}
+			return
+		}
+
+		orderBytes := make([]byte, 8)
+		binary.BigEndian.PutUint64(orderBytes, uint64(order))
+		data := append(orderBytes, buffer[:n]...)
+
+		stream := streams[order%int64(chanNum)]
+
+		if debug {
+			fmt.Fprintf(os.Stderr, "Read data: %s\n", string(data[8:]))
+		}
+
+		_, err = stream.Write(data)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to send data: %s, retrying...\n", err)
+		}
+
+		order++
+	}
 }
 
 func handleClientConnection(id int, session quic.Session, debug bool, wg *sync.WaitGroup, chData <-chan channelData) {
