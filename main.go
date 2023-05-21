@@ -136,9 +136,9 @@ func handleStream(id int, session quic.Session, debug bool, wg *sync.WaitGroup, 
         return
     }
 
-    buffer := make([]byte, bufferSize+8) // We've increased the buffer size to accommodate the order value
-    for {
-        n, err := stream.Read(buffer)
+	for {
+		buffer := make([]byte, bufferSize+8) // Reset the buffer before each read
+		n, err := stream.Read(buffer)
         if err != nil {
             if err != io.EOF {
                 fmt.Fprintf(os.Stderr, "Connection with %s failed: %s\n", session.RemoteAddr(), err)
@@ -160,22 +160,22 @@ func handleStream(id int, session quic.Session, debug bool, wg *sync.WaitGroup, 
 }
 
 func handleWrite(chData <-chan channelData) {
-	priorityQueue := make(PriorityQueue, 0, bufferSize)
-	heap.Init(&priorityQueue)
-	var lastOrder int64 = -1
+    priorityQueue := make(PriorityQueue, 0, bufferSize)
+    heap.Init(&priorityQueue)
+    var lastOrder int64 = -1
 
-	for data := range chData {
-		item := &data
-		heap.Push(&priorityQueue, item)
-		for priorityQueue.Len() > 0 && priorityQueue[0].order == lastOrder+1 {
-			lastOrder++
-			item := heap.Pop(&priorityQueue).(*channelData)
-			_, err := os.Stdout.Write(item.data)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to write data to stream: %s\n", err)
-			}
-		}
-	}
+    for data := range chData {
+        item := &data
+        heap.Push(&priorityQueue, item)
+        for priorityQueue.Len() > 0 && priorityQueue[0].order == lastOrder+1 {
+            lastOrder++
+            item := heap.Pop(&priorityQueue).(*channelData)
+            _, err := os.Stdout.Write(item.data)
+            if err != nil {
+                fmt.Fprintf(os.Stderr, "Failed to write data to stream: %s\n", err)
+            }
+        }
+    }
 }
 
 func readFull(reader io.Reader, buffer []byte) (int, error) {
