@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"sync"
 
@@ -98,7 +99,14 @@ func startServer(port string, debug bool, tlsConfig *tls.Config, chanNum, buffer
 	for {
 		session, err := listener.Accept(context.Background())
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "Failed to accept connection:", err)
+			if nerr, ok := err.(net.Error); ok && nerr.Temporary() {
+				fmt.Fprintf(os.Stderr, "Temporary accept error: %s\n", err)
+				continue
+			} else if err == io.EOF {
+				fmt.Fprintln(os.Stderr, "Accept loop ended")
+				break
+			}
+			fmt.Fprintf(os.Stderr, "Failed to accept connection: %s\n", err)
 			continue
 		}
 		fmt.Fprintf(os.Stderr, "Accepted connection from %s\n", session.RemoteAddr())
@@ -127,25 +135,38 @@ func handleConnection(session quic.Session, debug bool, chanNum, bufferSize int)
 func handleStream(id int, session quic.Session, debug bool, wg *sync.WaitGroup, chData chan<- channelData, bufferSize int) {
 	defer wg.Done()
 
-	stream, err := session.AcceptStream(context.Background())
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Failed to accept stream for ID", id, ":", err)
-		return
-	}
+	for {
+		stream, err := session.AcceptStream(context.Background())
+		if err != nil {
+			if nerr, ok := err.(net.Error); ok && nerr.Temporary() {
+				fmt.Fprintf(os.Stderr, "Temporary stream accept error for ID %d: %s\n", id, err)
+				continue
+			} else if err == io.EOF {
+				fmt.Fprintf(os.Stderr, "Stream accept loop ended for ID %d\n", id)
+				break
+			}
+			fmt.Fprintf(os.Stderr, "Failed to accept stream for ID %d: %s\n", id, err)
+			break
+		}
 
+		handleStreamRead(id, stream, debug, chData, bufferSize)
+	}
+}
+
+func handleStreamRead(id int, stream quic.Stream, debug bool, chData chan<- channelData, bufferSize int) {
 	buffer := make([]byte, bufferSize+8) // Create the buffer with the specified bufferSize
 
 	for {
 		n, err := stream.Read(buffer)
 		if err != nil {
 			if err != io.EOF {
-				fmt.Fprintf(os.Stderr, "Connection with %s failed: %s\n", session.RemoteAddr(), err)
+				fmt.Fprintf(os.Stderr, "Stream read error for ID %d: %s\n", id, err)
 			}
-			return
+			break
 		}
 
 		if debug {
-			fmt.Fprintf(os.Stderr, "Received data: %s\n", string(buffer[8:n])) // Print the actual data, excluding the order value
+			fmt.Fprintf(os.Stderr, "Received data from ID %d: %s\n", id, string(buffer[8:n])) // Print the actual data, excluding the order value
 		}
 
 		order := binary.BigEndian.Uint64(buffer[:8]) // Extract the order value from the buffer
@@ -155,6 +176,8 @@ func handleStream(id int, session quic.Session, debug bool, wg *sync.WaitGroup, 
 			order: int64(order),
 		}
 	}
+
+	stream.Close()
 }
 
 func handleWrite(chData <-chan channelData) {
