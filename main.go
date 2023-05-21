@@ -133,6 +133,8 @@ func handleStream(id int, session quic.Session, debug bool, wg *sync.WaitGroup, 
 		return
 	}
 
+	fmt.Fprintf(os.Stderr, "Accepted stream for ID %d\n", id)
+
 	buffer := make([]byte, bufferSize+8) // Create the buffer with the specified bufferSize
 
 	for {
