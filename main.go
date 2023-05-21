@@ -178,54 +178,65 @@ func handleWrite(chData <-chan channelData) {
 	}
 }
 
+func readFull(reader io.Reader, buffer []byte) (int, error) {
+    var total int
+    for total < len(buffer) {
+        n, err := reader.Read(buffer[total:])
+        if n == 0 || err != nil {
+            return total, err
+        }
+        total += n
+    }
+    return total, nil
+}
 func startClient(addr string, debug bool, tlsConfig *tls.Config, chanNum int) {
-	session, err := quic.DialAddr(addr, tlsConfig, nil)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Failed to connect:", err)
-		return
-	}
-	defer session.CloseWithError(0, "")
+    session, err := quic.DialAddr(addr, tlsConfig, nil)
+    if err != nil {
+        fmt.Fprintln(os.Stderr, "Failed to connect:", err)
+        return
+    }
+    defer session.CloseWithError(0, "")
 
-	streams := make([]quic.Stream, chanNum)
-	for i := 0; i < chanNum; i++ {
-		stream, err := session.OpenStreamSync(context.Background())
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Failed to open stream:", err)
-			return
-		}
-		streams[i] = stream
-	}
+    streams := make([]quic.Stream, chanNum)
+    for i := 0; i < chanNum; i++ {
+        stream, err := session.OpenStreamSync(context.Background())
+        if err != nil {
+            fmt.Fprintln(os.Stderr, "Failed to open stream:", err)
+            return
+        }
+        streams[i] = stream
+    }
 
-	reader := bufio.NewReader(os.Stdin)
-	buffer := make([]byte, bufferSize-8) // Leave room for the order value
+    reader := bufio.NewReader(os.Stdin)
+    buffer := make([]byte, bufferSize-8) // Leave room for the order value
 
-	var order int64 = 0
-	for {
-		n, err := reader.Read(buffer)
-		if err != nil {
-			if err != io.EOF {
-				fmt.Fprintln(os.Stderr, "Failed to read from stdin:", err)
-			}
-			return
-		}
+    var order int64 = 0
+    for {
+        n, err := readFull(reader, buffer)
+        if err != nil {
+            if err != io.EOF {
+                fmt.Fprintln(os.Stderr, "Failed to read from stdin:", err)
+            }
+            return
+        }
 
-		orderBytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(orderBytes, uint64(order))
-		data := append(orderBytes, buffer[:n]...)
+        orderBytes := make([]byte, 8)
+        binary.BigEndian.PutUint64(orderBytes, uint64(order))
+        data := append(orderBytes, buffer[:n]...)
 
-		stream := streams[order%int64(chanNum)]
+        stream := streams[order%int64(chanNum)]
 
-		if debug {
-			fmt.Fprintf(os.Stderr, "Read data: %s\n", string(data[8:]))
-		}
+        if debug {
+            fmt.Fprintf(os.Stderr, "Read data: %s\n", string(data[8:]))
+        }
 
-		_, err = stream.Write(data)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to send data: %s, retrying...\n", err)
-		}
+        _, err = stream.Write(data)
+        if err != nil {
+            fmt.Fprintf(os.Stderr, "Failed to send data: %s, retrying...\n", err)
+        }
 
-		order++
-	}
+        order++
+    }
 }
 
 func handleClientConnection(id int, session quic.Session, debug bool, wg *sync.WaitGroup, chData <-chan channelData) {
