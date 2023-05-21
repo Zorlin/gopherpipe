@@ -18,7 +18,6 @@ import (
 
 const (
 	bufferSize = 134217728 // 128 MB
-	chanNum    = 8         // Number of channels
 )
 
 var (
@@ -28,6 +27,7 @@ var (
 	address    = flag.String("addr", "", "address for client mode")
 	certFile   = flag.String("cert", "", "certificate file")
 	keyFile    = flag.String("key", "", "private key file")
+	chanNum    = flag.Int("channels", 8, "number of parallel channels")
 )
 
 type channelData struct {
@@ -84,13 +84,13 @@ func main() {
 	}
 
 	if *serverMode {
-		startServer(*port, *debug, tlsConfig)
+		startServer(*port, *debug, tlsConfig, *chanNum)
 	} else {
-		startClient(*address, *debug, tlsConfig)
+		startClient(*address, *debug, tlsConfig, *chanNum)
 	}
 }
 
-func startServer(port string, debug bool, tlsConfig *tls.Config) {
+func startServer(port string, debug bool, tlsConfig *tls.Config, chanNum int) {
 	listener, err := quic.ListenAddr(":"+port, tlsConfig, nil)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to start server:", err)
@@ -106,11 +106,11 @@ func startServer(port string, debug bool, tlsConfig *tls.Config) {
 		}
 		fmt.Fprintf(os.Stderr, "Accepted connection from %s\n", session.RemoteAddr())
 
-		go handleConnection(session, debug)
+		go handleConnection(session, debug, chanNum)
 	}
 }
 
-func handleConnection(session quic.Session, debug bool) {
+func handleConnection(session quic.Session, debug bool, chanNum int) {
 	defer session.CloseWithError(0, "")
 
 	var wg sync.WaitGroup
@@ -236,7 +236,7 @@ func handleClientConnection(id int, session quic.Session, debug bool, wg *sync.W
 	}
 
 	for chData := range chData {
-		if chData.order%chanNum == int64(id) {
+		if chData.order%int64(*chanNum) == int64(id) {
 			if debug {
 				fmt.Fprintf(os.Stderr, "Read data: %s\n", string(chData.data))
 			}
