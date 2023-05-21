@@ -136,8 +136,7 @@ func handleStream(id int, session quic.Session, debug bool, wg *sync.WaitGroup, 
         return
     }
 
-    buffer := make([]byte, bufferSize)
-    var counter int64 = 0
+    buffer := make([]byte, bufferSize+8) // We've increased the buffer size to accommodate the order value
     for {
         n, err := stream.Read(buffer)
         if err != nil {
@@ -148,14 +147,15 @@ func handleStream(id int, session quic.Session, debug bool, wg *sync.WaitGroup, 
         }
 
         if debug {
-            fmt.Fprintf(os.Stderr, "Received data: %s\n", string(buffer[:n]))
+            fmt.Fprintf(os.Stderr, "Received data: %s\n", string(buffer[8:n])) // We're only printing the actual data, not the order value
         }
 
+        order := binary.BigEndian.Uint64(buffer[:8]) // We're extracting the order value from the beginning of the buffer
+
         chData <- channelData{
-            data:  buffer[:n],
-            order: counter,
+            data:  buffer[8:n],
+            order: int64(order),
         }
-        counter++
     }
 }
 
