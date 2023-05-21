@@ -1,6 +1,6 @@
 module github.com/zorlin/gopherpipe
 
-go 1.19
+go 1.18
 
 require github.com/lucas-clemente/quic-go v0.26.0
 
