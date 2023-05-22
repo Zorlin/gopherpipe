@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	quic "github.com/lucas-clemente/quic-go"
 )
@@ -91,18 +92,27 @@ func startServer(port string, debug bool, tlsConfig *tls.Config) {
 func handleConnection(session quic.Session, debug bool, numChannels uint) {
 	defer session.CloseWithError(0, "")
 
+	wg := sync.WaitGroup{}
+	wg.Add(int(numChannels))
+
 	streams := make([]quic.Stream, numChannels)
 	buffers := make([][]byte, numChannels)
 
 	for i := uint(0); i < numChannels; i++ {
-		stream, err := session.AcceptStream(context.Background())
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Failed to accept stream:", err)
-			return
-		}
-		streams[i] = stream
-		buffers[i] = make([]byte, *bufferSize)
+		go func(index uint) {
+			stream, err := session.AcceptStream(context.Background())
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to accept stream for channel %d: %s\n", index, err)
+				wg.Done()
+				return
+			}
+			streams[index] = stream
+			buffers[index] = make([]byte, *bufferSize)
+			wg.Done()
+		}(i)
 	}
+
+	wg.Wait()
 
 	for {
 		for i, stream := range streams {
@@ -135,10 +145,17 @@ func startClient(addr string, debug bool, tlsConfig *tls.Config) {
 	}
 	defer session.CloseWithError(0, "")
 
-	stream, err := session.OpenStreamSync(context.Background())
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Failed to open stream:", err)
-		return
+	streams := make([]quic.Stream, *numChannels)
+	buffers := make([][]byte, *numChannels)
+
+	for i := uint(0); i < *numChannels; i++ {
+		stream, err := session.OpenStreamSync(context.Background())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to open stream for channel %d: %s\n", i, err)
+			return
+		}
+		streams[i] = stream
+		buffers[i] = make([]byte, *bufferSize)
 	}
 
 	reader := bufio.NewReader(os.Stdin)
@@ -158,9 +175,11 @@ func startClient(addr string, debug bool, tlsConfig *tls.Config) {
 				fmt.Fprintf(os.Stderr, "Read data: %s\n", string(buffer[:n]))
 			}
 
-			_, err = stream.Write(buffer[:n])
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to send data: %s, retrying...\n", err)
+			for i, stream := range streams {
+				_, err = stream.Write(buffer[:n])
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to send data on channel %d: %s, retrying...\n", i, err)
+				}
 			}
 		}
 	}()
