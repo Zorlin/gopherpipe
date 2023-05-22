@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"sync"
-	"time"
 
 	quic "github.com/lucas-clemente/quic-go"
 )
@@ -26,8 +25,8 @@ var (
 	address     = flag.String("addr", "", "address for client mode")
 	certFile    = flag.String("cert", "", "certificate file")
 	keyFile     = flag.String("key", "", "private key file")
-	bufferSize  = flag.Int("bufferSize", DefaultBufferSize, "size of the buffer")
-	channelNums = flag.Int("channels", 1, "number of channels to use")
+	bufferSize  = flag.Int("bufferSize", 4096, "buffer size for data transfer")
+	channels    *int
 )
 
 func main() {
@@ -54,7 +53,9 @@ func main() {
 	if *serverMode {
 		startServer(*port, *debug, tlsConfig)
 	} else {
-		startClient(*address, *debug, tlsConfig)
+		channels = flag.Int("channels", 1, "number of channels to use")
+		flag.Parse()
+		startClient(*address, *debug, tlsConfig, *channels)
 	}
 }
 
@@ -82,8 +83,6 @@ func handleConnection(session quic.Session, debug bool) {
 	defer session.CloseWithError(0, "")
 
 	for {
-		time.Sleep(time.Millisecond * 10)  // add a short delay
-
 		stream, err := session.AcceptStream(context.Background())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Failed to accept stream:", err)
@@ -99,22 +98,22 @@ func handleConnection(session quic.Session, debug bool) {
 						fmt.Fprintf(os.Stderr, "Connection with %s failed: %s\n", session.RemoteAddr(), err)
 					}
 					return
-					}
-
-					if debug {
-						fmt.Fprintf(os.Stderr, "Received data: %s\n", string(buffer[:n]))
-					}
-
-					_, err = os.Stdout.Write(buffer[:n])
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "Failed to write data to stream: %s\n", err)
-					}
 				}
-			}(stream)
-		}
-	}
 
-func startClient(addr string, debug bool, tlsConfig *tls.Config) {
+				if debug {
+					fmt.Fprintf(os.Stderr, "Received data: %s\n", string(buffer[:n]))
+				}
+
+				_, err = os.Stdout.Write(buffer[:n])
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to write data to stream: %s\n", err)
+				}
+			}
+		}(stream)
+	}
+}
+
+func startClient(addr string, debug bool, tlsConfig *tls.Config, channelNums int) {
 	session, err := quic.DialAddr(addr, tlsConfig, nil)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to connect:", err)
@@ -124,7 +123,7 @@ func startClient(addr string, debug bool, tlsConfig *tls.Config) {
 
 	var wg sync.WaitGroup
 
-	for i := 0; i < *channelNums; i++ {
+	for i := 0; i < channelNums; i++ {
 		wg.Add(1)
 
 		go func() {
