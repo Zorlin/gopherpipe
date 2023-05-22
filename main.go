@@ -9,28 +9,39 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sync"
 
 	quic "github.com/lucas-clemente/quic-go"
 )
 
 const (
-	DefaultBufferSize = 4096 // 4 KB
+	defaultBufferSize = 134217728 // 128 MB
+	maxBufferSize     = 16 * 1024 * 1024 * 1024 // 16 GiB
+	maxChannels       = 4096
 )
 
 var (
-	serverMode  = flag.Bool("server", false, "run in server mode")
-	debug       = flag.Bool("debug", false, "enable debug mode")
-	port        = flag.String("port", "51115", "port number to use")
-	address     = flag.String("addr", "", "address for client mode")
-	certFile    = flag.String("cert", "", "certificate file")
-	keyFile     = flag.String("key", "", "private key file")
-	bufferSize  = flag.Int("bufferSize", 4096, "buffer size for data transfer")
-	channels    = flag.Int("channels", 1, "number of channels to use")
+	serverMode   = flag.Bool("server", false, "run in server mode")
+	debug        = flag.Bool("debug", false, "enable debug mode")
+	port         = flag.String("port", "51115", "port number to use")
+	address      = flag.String("addr", "", "address for client mode")
+	certFile     = flag.String("cert", "", "certificate file")
+	keyFile      = flag.String("key", "", "private key file")
+	bufferSize   = flag.Uint64("buffer", defaultBufferSize, "buffer size in bytes (max 16GiB)")
+	numChannels  = flag.Uint("channels", 1, "number of transmission channels")
 )
 
 func main() {
 	flag.Parse()
+
+	if *bufferSize > maxBufferSize {
+		fmt.Fprintln(os.Stderr, "Buffer size exceeds the maximum limit (16GiB). Using the default buffer size.")
+		*bufferSize = defaultBufferSize
+	}
+
+	if *numChannels > maxChannels {
+		fmt.Fprintln(os.Stderr, "Number of channels exceeds the maximum limit (4096). Using the default number of channels.")
+		*numChannels = 1
+	}
 
 	tlsConfig := &tls.Config{
 		NextProtos: []string{"quic-echo-example"},
@@ -53,7 +64,7 @@ func main() {
 	if *serverMode {
 		startServer(*port, *debug, tlsConfig)
 	} else {
-		startClient(*address, *debug, tlsConfig, *channels)
+		startClient(*address, *debug, tlsConfig)
 	}
 }
 
@@ -73,45 +84,50 @@ func startServer(port string, debug bool, tlsConfig *tls.Config) {
 		}
 		fmt.Fprintf(os.Stderr, "Accepted connection from %s\n", session.RemoteAddr())
 
-		go handleConnection(session, debug)
+		go handleConnection(session, debug, *numChannels)
 	}
 }
 
-func handleConnection(session quic.Session, debug bool) {
+func handleConnection(session quic.Session, debug bool, numChannels uint) {
 	defer session.CloseWithError(0, "")
 
-	for {
+	streams := make([]quic.Stream, numChannels)
+	buffers := make([][]byte, numChannels)
+
+	for i := uint(0); i < numChannels; i++ {
 		stream, err := session.AcceptStream(context.Background())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Failed to accept stream:", err)
 			return
 		}
+		streams[i] = stream
+		buffers[i] = make([]byte, *bufferSize)
+	}
 
-		go func(stream quic.Stream) {
-			buffer := make([]byte, *bufferSize)
-			for {
-				n, err := stream.Read(buffer)
-				if err != nil {
-					if err != io.EOF {
-						fmt.Fprintf(os.Stderr, "Connection with %s failed: %s\n", session.RemoteAddr(), err)
-					}
-					return
+	for {
+		for i, stream := range streams {
+			buffer := buffers[i]
+			n, err := stream.Read(buffer)
+			if err != nil {
+				if err != io.EOF {
+					fmt.Fprintf(os.Stderr, "Connection with %s failed: %s\n", session.RemoteAddr(), err)
 				}
-
-				if debug {
-					fmt.Fprintf(os.Stderr, "Received data: %s\n", string(buffer[:n]))
-				}
-
-				_, err= os.Stdout.Write(buffer[:n])
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Failed to write data to stream: %s\n", err)
-				}
+				return
 			}
-		}(stream)
+
+			if debug {
+				fmt.Fprintf(os.Stderr, "Received data: %s\n", string(buffer[:n]))
+			}
+
+			_, err = os.Stdout.Write(buffer[:n])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to write data to stream: %s, retrying...\n", err)
+			}
+		}
 	}
 }
 
-func startClient(addr string, debug bool, tlsConfig *tls.Config, channelNums int) {
+func startClient(addr string, debug bool, tlsConfig *tls.Config) {
 	session, err := quic.DialAddr(addr, tlsConfig, nil)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to connect:", err)
@@ -119,43 +135,36 @@ func startClient(addr string, debug bool, tlsConfig *tls.Config, channelNums int
 	}
 	defer session.CloseWithError(0, "")
 
-	var wg sync.WaitGroup
+	stream, err := session.OpenStreamSync(context.Background())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Failed to open stream:", err)
+		return
+	}
 
-	for i := 0; i < channelNums; i++ {
-		wg.Add(1)
+	reader := bufio.NewReader(os.Stdin)
 
-		go func() {
-			defer wg.Done()
-
-			stream, err := session.OpenStreamSync(context.Background())
+	go func() {
+		buffer := make([]byte, *bufferSize)
+		for {
+			n, err := reader.Read(buffer)
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "Failed to open stream:", err)
+				if err != io.EOF {
+					fmt.Fprintln(os.Stderr, "Failed to read from stdin:", err)
+				}
 				return
 			}
 
-			reader := bufio.NewReader(os.Stdin)
-			buffer := make([]byte, *bufferSize)
-
-			for {
-				n, err := reader.Read(buffer)
-				if err != nil {
-					if err != io.EOF {
-						fmt.Fprintln(os.Stderr, "Failed to read from stdin:", err)
-					}
-					return
-				}
-
-				if debug {
-					fmt.Fprintf(os.Stderr, "Read data: %s\n", string(buffer[:n]))
-				}
-
-				_, err = stream.Write(buffer[:n])
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Failed to send data: %s\n", err)
-				}
+			if debug {
+				fmt.Fprintf(os.Stderr, "Read data: %s\n", string(buffer[:n]))
 			}
-		}()
-	}
 
-	wg.Wait()
+			_, err = stream.Write(buffer[:n])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to send data: %s, retrying...\n", err)
+			}
+		}
+	}()
+
+	// Keep the main goroutine running until the child goroutine finishes.
+	select {}
 }
