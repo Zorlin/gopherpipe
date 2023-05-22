@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 
 	quic "github.com/lucas-clemente/quic-go"
 )
@@ -81,6 +82,8 @@ func handleConnection(session quic.Session, debug bool) {
 	defer session.CloseWithError(0, "")
 
 	for {
+		time.Sleep(time.Millisecond * 10)  // add a short delay
+
 		stream, err := session.AcceptStream(context.Background())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Failed to accept stream:", err)
