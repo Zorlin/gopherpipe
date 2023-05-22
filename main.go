@@ -15,20 +15,20 @@ import (
 )
 
 const (
-	defaultBufferSize = 134217728 // 128 MB
+	defaultBufferSize = 134217728               // 128 MB
 	maxBufferSize     = 16 * 1024 * 1024 * 1024 // 16 GiB
 	maxChannels       = 4096
 )
 
 var (
-	serverMode   = flag.Bool("server", false, "run in server mode")
-	debug        = flag.Bool("debug", false, "enable debug mode")
-	port         = flag.String("port", "51115", "port number to use")
-	address      = flag.String("addr", "", "address for client mode")
-	certFile     = flag.String("cert", "", "certificate file")
-	keyFile      = flag.String("key", "", "private key file")
-	bufferSize   = flag.Uint64("buffer", defaultBufferSize, "buffer size in bytes (max 16GiB)")
-	numChannels  = flag.Uint("channels", 1, "number of transmission channels")
+	serverMode  = flag.Bool("server", false, "run in server mode")
+	debug       = flag.Bool("debug", false, "enable debug mode")
+	port        = flag.String("port", "51115", "port number to use")
+	address     = flag.String("addr", "", "address for client mode")
+	certFile    = flag.String("cert", "", "certificate file")
+	keyFile     = flag.String("key", "", "private key file")
+	bufferSize  = flag.Uint64("buffer", defaultBufferSize, "buffer size in bytes (max 16GiB)")
+	numChannels = flag.Uint("channels", 1, "number of transmission channels")
 )
 
 func main() {
@@ -129,12 +129,11 @@ func handleConnection(session quic.Session, debug bool, numChannels uint) {
 				fmt.Fprintf(os.Stderr, "Received data: %s\n", string(buffer[:n]))
 			}
 
-		go func(b []byte) {
-			_, err = os.Stdout.Write(b)
+			_, err = os.Stdout.Write(buffer[:n])
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to write data to stream: %s, retrying...\n", err)
 			}
-		}(buffer[:n])
+		}
 	}
 }
 
