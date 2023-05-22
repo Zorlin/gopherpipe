@@ -26,7 +26,7 @@ var (
 	certFile    = flag.String("cert", "", "certificate file")
 	keyFile     = flag.String("key", "", "private key file")
 	bufferSize  = flag.Int("bufferSize", 4096, "buffer size for data transfer")
-	channels    *int
+	channels    = flag.Int("channels", 1, "number of channels to use")
 )
 
 func main() {
@@ -53,8 +53,6 @@ func main() {
 	if *serverMode {
 		startServer(*port, *debug, tlsConfig)
 	} else {
-		channels = flag.Int("channels", 1, "number of channels to use")
-		flag.Parse()
 		startClient(*address, *debug, tlsConfig, *channels)
 	}
 }
@@ -104,7 +102,7 @@ func handleConnection(session quic.Session, debug bool) {
 					fmt.Fprintf(os.Stderr, "Received data: %s\n", string(buffer[:n]))
 				}
 
-				_, err = os.Stdout.Write(buffer[:n])
+				_, err= os.Stdout.Write(buffer[:n])
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Failed to write data to stream: %s\n", err)
 				}
