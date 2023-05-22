@@ -2,19 +2,20 @@ package main
 
 import (
 	"bufio"
-	"container/heap"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/binary"
 	"flag"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"sync"
 
 	quic "github.com/lucas-clemente/quic-go"
+)
+
+const (
+	DefaultBufferSize = 4096 // 4 KB
 )
 
 var (
@@ -24,41 +25,9 @@ var (
 	address     = flag.String("addr", "", "address for client mode")
 	certFile    = flag.String("cert", "", "certificate file")
 	keyFile     = flag.String("key", "", "private key file")
-	chanNum     = flag.Int("channels", 8, "number of parallel channels")
-	bufferSize  = flag.Int("bufferSize", 134217728, "buffer size in bytes")
+	bufferSize  = flag.Int("bufferSize", DefaultBufferSize, "size of the buffer")
+	channelNums = flag.Int("channels", 1, "number of channels to use")
 )
-
-type channelData struct {
-	data  []byte
-	order int64
-	index int
-}
-
-type PriorityQueue []*channelData
-
-func (pq PriorityQueue) Len() int { return len(pq) }
-
-func (pq PriorityQueue) Less(i, j int) bool {
-	return pq[i].order < pq[j].order
-}
-
-func (pq PriorityQueue) Swap(i, j int) {
-	pq[i], pq[j] = pq[j], pq[i]
-}
-
-func (pq *PriorityQueue) Push(x interface{}) {
-	item := x.(*channelData)
-	item.index = len(*pq)
-	*pq = append(*pq, item)
-}
-
-func (pq *PriorityQueue) Pop() interface{} {
-	old := *pq
-	n := len(old)
-	item := old[n-1]
-	*pq = old[0 : n-1]
-	return item
-}
 
 func main() {
 	flag.Parse()
@@ -66,7 +35,7 @@ func main() {
 	tlsConfig := &tls.Config{
 		NextProtos: []string{"quic-echo-example"},
 		VerifyPeerCertificate: func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
-			return nil // Always return nil to skip certificate validation
+			return nil // Always return nil, to skip certificate validation
 		},
 	}
 
@@ -82,13 +51,13 @@ func main() {
 	}
 
 	if *serverMode {
-		startServer(*port, *debug, tlsConfig, *chanNum, *bufferSize)
+		startServer(*port, *debug, tlsConfig)
 	} else {
-		startClient(*address, *debug, tlsConfig, *chanNum, *bufferSize)
+		startClient(*address, *debug, tlsConfig)
 	}
 }
 
-func startServer(port string, debug bool, tlsConfig *tls.Config, chanNum, bufferSize int) {
+func startServer(port string, debug bool, tlsConfig *tls.Config) {
 	listener, err := quic.ListenAddr(":"+port, tlsConfig, nil)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to start server:", err)
@@ -99,126 +68,50 @@ func startServer(port string, debug bool, tlsConfig *tls.Config, chanNum, buffer
 	for {
 		session, err := listener.Accept(context.Background())
 		if err != nil {
-			if nerr, ok := err.(net.Error); ok && nerr.Temporary() {
-				fmt.Fprintf(os.Stderr, "Temporary accept error: %s\n", err)
-				continue
-			} else if err == io.EOF {
-				fmt.Fprintln(os.Stderr, "Accept loop ended")
-				break
-			}
-			fmt.Fprintf(os.Stderr, "Failed to accept connection: %s\n", err)
+			fmt.Fprintln(os.Stderr, "Failed to accept connection:", err)
 			continue
 		}
 		fmt.Fprintf(os.Stderr, "Accepted connection from %s\n", session.RemoteAddr())
 
-		go handleConnection(session, debug, chanNum, bufferSize)
+		go handleConnection(session, debug)
 	}
 }
 
-func handleConnection(session quic.Session, debug bool, chanNum, bufferSize int) {
+func handleConnection(session quic.Session, debug bool) {
 	defer session.CloseWithError(0, "")
-
-	var wg sync.WaitGroup
-	chData := make(chan channelData, chanNum)
-
-	for i := 0; i < chanNum; i++ {
-		wg.Add(1)
-		go handleStream(i, session, debug, &wg, chData, bufferSize)
-	}
-
-	go handleWrite(chData)
-
-	wg.Wait()
-	close(chData)
-}
-
-func handleStream(id int, session quic.Session, debug bool, wg *sync.WaitGroup, chData chan<- channelData, bufferSize int) {
-	defer wg.Done()
 
 	for {
 		stream, err := session.AcceptStream(context.Background())
 		if err != nil {
-			if nerr, ok := err.(net.Error); ok && nerr.Temporary() {
-				fmt.Fprintf(os.Stderr, "Temporary stream accept error for ID %d: %s\n", id, err)
-				continue
-			} else if err == io.EOF {
-				fmt.Fprintf(os.Stderr, "Stream accept loop ended for ID %d\n", id)
-				break
-			}
-			fmt.Fprintf(os.Stderr, "Failed to accept stream for ID %d: %s\n", id, err)
-			break
+			fmt.Fprintln(os.Stderr, "Failed to accept stream:", err)
+			return
 		}
 
-		handleStreamRead(id, stream, debug, chData, bufferSize)
-	}
-}
+		go func(stream quic.Stream) {
+			buffer := make([]byte, *bufferSize)
+			for {
+				n, err := stream.Read(buffer)
+				if err != nil {
+					if err != io.EOF {
+						fmt.Fprintf(os.Stderr, "Connection with %s failed: %s\n", session.RemoteAddr(), err)
+					}
+					return
+					}
 
-func handleStreamRead(id int, stream quic.Stream, debug bool, chData chan<- channelData, bufferSize int) {
-	orderBuffer := make([]byte, 8) // Buffer to receive the order value
-	dataBuffer := make([]byte, bufferSize) // Buffer to receive the data
+					if debug {
+						fmt.Fprintf(os.Stderr, "Received data: %s\n", string(buffer[:n]))
+					}
 
-	for {
-		_, err := io.ReadFull(stream, orderBuffer) // Read the order value
-		if err != nil {
-			if err != io.EOF {
-				fmt.Fprintf(os.Stderr, "Stream read error for ID %d: %s\n", id, err)
-			}
-			break
-		}
-
-		order := binary.BigEndian.Uint64(orderBuffer)
-
-		n, err := stream.Read(dataBuffer)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Stream read error for ID %d: %s\n", id, err)
-			break
-		}
-
-		if debug {
-			fmt.Fprintf(os.Stderr, "Received data from ID %d: %s\n", id, string(dataBuffer[:n]))
-		}
-
-		chData <- channelData{
-			data:  append([]byte(nil), dataBuffer[:n]...), // Copy the data
-			order: int64(order),
+					_, err = os.Stdout.Write(buffer[:n])
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Failed to write data to stream: %s\n", err)
+					}
+				}
+			}(stream)
 		}
 	}
 
-	stream.Close()
-}
-
-func handleWrite(chData <-chan channelData) {
-	priorityQueue := make(PriorityQueue, 0)
-	heap.Init(&priorityQueue)
-	var lastOrder int64 = -1
-
-	for data := range chData {
-		item := &data
-		heap.Push(&priorityQueue, item)
-		for priorityQueue.Len() > 0 && priorityQueue[0].order == lastOrder+1 {
-			lastOrder++
-			item := heap.Pop(&priorityQueue).(*channelData)
-			_, err := os.Stdout.Write(item.data)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to write data to stream: %s\n", err)
-			}
-		}
-	}
-}
-
-func readFull(reader io.Reader, buffer []byte) (int, error) {
-	var total int
-	for total < len(buffer) {
-		n, err := reader.Read(buffer[total:])
-		if n == 0 || err != nil {
-			return total, err
-		}
-		total += n
-	}
-	return total, nil
-}
-
-func startClient(addr string, debug bool, tlsConfig *tls.Config, chanNum, bufferSize int) {
+func startClient(addr string, debug bool, tlsConfig *tls.Config) {
 	session, err := quic.DialAddr(addr, tlsConfig, nil)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to connect:", err)
@@ -226,44 +119,43 @@ func startClient(addr string, debug bool, tlsConfig *tls.Config, chanNum, buffer
 	}
 	defer session.CloseWithError(0, "")
 
-	streams := make([]quic.Stream, chanNum)
-	for i := 0; i < chanNum; i++ {
-		stream, err := session.OpenStreamSync(context.Background())
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Failed to open stream:", err)
-			return
-		}
-		streams[i] = stream
-	}
+	var wg sync.WaitGroup
 
-	reader := bufio.NewReader(os.Stdin)
-	buffer := make([]byte, bufferSize)
+	for i := 0; i < *channelNums; i++ {
+		wg.Add(1)
 
-	var order int64 = 0
-	for {
-		n, err := reader.Read(buffer)
-		if err != nil {
-			if err != io.EOF {
-				fmt.Fprintln(os.Stderr, "Failed to read from stdin:", err)
+		go func() {
+			defer wg.Done()
+
+			stream, err := session.OpenStreamSync(context.Background())
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Failed to open stream:", err)
+				return
 			}
-			return
-		}
 
-		orderBytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(orderBytes, uint64(order))
-		data := append(orderBytes, buffer[:n]...)
+			reader := bufio.NewReader(os.Stdin)
+			buffer := make([]byte, *bufferSize)
 
-		stream := streams[order%int64(chanNum)]
+			for {
+				n, err := reader.Read(buffer)
+				if err != nil {
+					if err != io.EOF {
+						fmt.Fprintln(os.Stderr, "Failed to read from stdin:", err)
+					}
+					return
+				}
 
-		if debug {
-			fmt.Fprintf(os.Stderr, "Read data: %s\n", string(data[8:]))
-		}
+				if debug {
+					fmt.Fprintf(os.Stderr, "Read data: %s\n", string(buffer[:n]))
+				}
 
-		_, err = stream.Write(data)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to send data: %s, retrying...\n", err)
-		}
-
-		order++
+				_, err = stream.Write(buffer[:n])
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to send data: %s\n", err)
+				}
+			}
+		}()
 	}
+
+	wg.Wait()
 }
